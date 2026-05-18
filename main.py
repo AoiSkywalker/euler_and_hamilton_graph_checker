@@ -9,10 +9,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
 from PyQt5.QtCore import Qt, QPointF, QTimer, pyqtSignal, QRectF, QSize
 from PyQt5.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPolygonF, QPainterPath
 
-from controllers.euler import euler_check, fleury, hierholzer, hierholzer_ad
-from controllers.hamilton import solve_delivery_problem
-from controllers.euler_brute import solve_euler_check, solve_fleury
-from controllers.hamilton_brute import solve_hamilton_brute
+from controllers.euler import euler_check, fleury, sub_euler_check
+from controllers.hamilton import solve_delivery_problem, solve_hamilton_brute
 
 # --- THEME COLORS ---
 THEME = {
@@ -41,13 +39,12 @@ class GraphCanvas(QWidget):
         self.nodes = []                     # Danh sách node 
         self.edges = []                     # Danh sách cạnh 
         self.path = []                      # Danh sách đường đi 
-        self.sim_step = -1                  # Bước mô phỏng 
-        self.dragging_node = None           # 
-        self.edge_start_node = None         # 
+        self.sim_step = -1                  # Bước mô phỏng hiện tại. Mặc định -1 chưa có mô phỏng 
+        self.dragging_node = None           # Node người dùng đang kéo 
+        self.edge_start_node = None         # Node người dùng đang chọn để chuẩn bị tạo cạnh mới 
         self.is_directed = False            # Flag đồ thị có hướng / vô hướng. Mặc định vô hướng 
         self.is_weighted = True             # Flag đồ thị có trọng số / không trọng số. Mặc định có trọng số 
-        self.setMouseTracking(True)         #
-        self.last_click_time = 0            # 
+        self.setMouseTracking(True)         # Theo dõi chuột liên tục (cấu hình PyQt)
 
     # Chức năng cập nhật đồ thị
     def set_data(self, nodes, edges, path, sim_step, is_directed, is_weighted):
@@ -59,8 +56,8 @@ class GraphCanvas(QWidget):
         self.is_weighted = is_weighted
         self.update()
 
-    # Vẽ toàn bộ đồ thị lên màn hình 
-    def paintEvent(self, event):
+    def paintEvent(self, event):                            # Ghi đè hàm paintEvent của PyQt
+        """Vẽ toàn bộ đồ thị lên màn hình """
         painter = QPainter(self)                            # Khởi tạo painter 
         painter.setRenderHint(QPainter.Antialiasing)        # chống răng cưa 
         
@@ -115,9 +112,9 @@ class GraphCanvas(QWidget):
             painter.drawEllipse(current_node, 21, 21)                 # vẽ hình tròn bán kính 21px 
             
             # label : nếu is_curr hoặc is_path thì màu trắng : nếu không thì màu text-main
-            # font monospace bold 11px, align chính giữa khung vuông ảo cạnh 42, nội dung tên node A B C...
+            # font Arial bold 11px, align chính giữa khung vuông ảo cạnh 42, nội dung tên node A B C...
             painter.setPen(QColor(THEME["white"]) if (is_curr or is_path) else QColor(THEME["text_main"]))
-            painter.setFont(QFont("monospace", 11, QFont.Bold))                                         
+            painter.setFont(QFont("Arial", 11, QFont.Bold))                                         
             painter.drawText(QRectF(current_node.x()-21, current_node.y()-21, 42, 42), Qt.AlignCenter, node["label"])
 
         # Hiệu ứng kéo-thả node 
@@ -126,7 +123,6 @@ class GraphCanvas(QWidget):
             mouse_pos = self.mapFromGlobal(self.cursor().pos())             # chuyển toạ độ con trỏ hiện tại từ hệ quy chiếu toàn cục (màn hình máy tính) sang hệ quy chiếu cục bộ (GraphCanvas)
             painter.drawLine(QPointF(self.edge_start_node["pos"][0], self.edge_start_node["pos"][1]), mouse_pos) # Vẽ cạnh từ node tới chuột 
 
-    # Vẽ cạnh
     def draw_edge(self, painter, u, v, edge):
         """Vẽ cạnh edge bằng painter giữa 2 nodes u và v"""
         edge_color = QColor(203, 213, 225)                          # Màu cạnh 
@@ -162,17 +158,16 @@ class GraphCanvas(QWidget):
             painter.drawRoundedRect(label_rect, 8, 8)               # Vẽ hình chữ nhật bo góc 
             
             painter.setPen(QColor(THEME["text_main"]))              # painter viền text_main 
-            painter.setFont(QFont("monospace", 10))                 # font monospace 10px 
+            painter.setFont(QFont("Arial", 10))                 # font Arial 10px 
             painter.drawText(label_rect, Qt.AlignCenter, str(edge["weight"]))   # Hiển thị trọng số, align chính giữa
            
-    # Sự kiện click chuột   -> lưu trữ node hoặc xoá cạnh
-    def mousePressEvent(self, event):
-        pos = event.pos()                                               #
-        if event.button() == Qt.LeftButton:                             #
-            # Click chọn node (vét cạn)
-            for node in self.nodes:                                     #
+    def mousePressEvent(self, event):                                   # Ghi đè hàm thư viện của PyQt
+        """Sự kiện click chuột -> lưu trữ node hoặc cập nhật cạnh"""
+        pos = event.pos()                                               # Lấy toạ độ click chuột trên hệ quy chiếu GraphCanvas 
+        if event.button() == Qt.LeftButton:                             # Nếu click chuột trái -> chức năng di chuyển, tạo sửa cạnh 
+            for node in self.nodes:                                     # Vét cạn 
                 dist = math.sqrt((node["pos"][0] - pos.x())**2 + (node["pos"][1] - pos.y())**2)
-                if dist < 21:
+                if dist < 21:                   # Nếu click vào node (độ dài node so với vị trí click bé hơn 21)
                     self.dragging_node = node   # ghi nhớ node cho hàm mouseMoveEvent       -> di chuyển node
                     self.edge_start_node = node # ghi nhớ node cho hàm mouseReleaseEnode    -> tạo cạnh mới 
                     return
@@ -190,36 +185,34 @@ class GraphCanvas(QWidget):
                     nx, ny = -dy/length, dx/length                      # Vector pháp tuyến đơn vị 
                     side = 1 if edge["target"] % 2 == 0 else -1         # Hướng dịch toạ độ trung điểm : lên (1) nếu node đích chẵn : xuống (-1) nếu node đích lẻ 
                     mid += QPointF(nx * 22 * side, ny * 22 * side)      # Dịch toạ độ trung điểm theo đường trung trực 22px
-                    
-                    label_rect = QRectF(mid.x() - 20, mid.y() - 14, 40, 28) #
-                    if label_rect.contains(pos.x(), pos.y()):           # 
+                    label_rect = QRectF(mid.x() - 20, mid.y() - 14, 40, 28) # Tạo khung hình chữ nhật, tâm toạ độ trung điểm đã dịch, dài 40px rộng 28px cho trọng số 
+                    if label_rect.contains(pos.x(), pos.y()):               # Nếu click trong khung hình chữ nhật 
                         new_w, ok = QInputDialog.getInt(self, "Sửa trọng số", "Nhập trọng số mới:", edge["weight"], 1, 1000)
                         if ok:                                          # Prompt sửa trọng số giới hạn trong đoạn [1,1000]
                             edge["weight"] = new_w                      # Cập nhật trọng số 
                             self.graphChanged.emit()                    # Gửi tín hiệu đồ thị đã thay đổi 
-                            self.update()                               # Cập nhật đồ thị 
+                            self.update()                               # Cập nhật ứng dụng 
                         return
 
-        elif event.button() == Qt.RightButton:
-            # Xoá cạnh khi chuột phải
-            for i, edge in enumerate(self.edges):
-                p1 = self.nodes[edge["source"]]["pos"]
-                p2 = self.nodes[edge["target"]]["pos"]
-                mid = QPointF((p1[0]+p2[0])/2, (p1[1]+p2[1])/2)
-                if math.sqrt((mid.x() - pos.x())**2 + (mid.y() - pos.y())**2) < 30:
-                    self.edges.pop(i)
-                    self.graphChanged.emit()
-                    self.update()
+        elif event.button() == Qt.RightButton:                          # Nếu click chuột phải -> chức năng : xoá cạnh 
+            for i, edge in enumerate(self.edges):                       # Duyệt danh sách cạnh 
+                p1 = self.nodes[edge["source"]]["pos"]                  # Toạ độ node nguồn 
+                p2 = self.nodes[edge["target"]]["pos"]                  # Toạ độ node đích 
+                mid = QPointF((p1[0]+p2[0])/2, (p1[1]+p2[1])/2)         # Trung điểm giữa 2 node 
+                if math.sqrt((mid.x() - pos.x())**2 + (mid.y() - pos.y())**2) < 30: # Nếu click gần trung điểm (khoảng cách trung điểm đến vị trí click bén hơn 30)
+                    self.edges.pop(i)                                   # Xoá cạnh 
+                    self.graphChanged.emit()                            # Gửi tín hiệu đồ thị đã thay đổi 
+                    self.update()                                       # Cập nhật ứng dụng
                     break
 
-    # Sự kiện di chuột      -> di chuyển node 
-    def mouseMoveEvent(self, event):
-        if self.dragging_node:
+    def mouseMoveEvent(self, event):                                    # Ghi đè hàm mouseMoveEvent của PyQt 
+        """Sự kiện di chuột -> di chuyển node """
+        if self.dragging_node:                                          # Nếu có node đang di chuyển thì cập nhật toạ độ theo toạ độ chuột
             self.dragging_node["pos"] = [event.pos().x(), event.pos().y()]
             self.update()
 
-    # Sự kiện thả chuột     -> Tạo cạnh mới 
-    def mouseReleaseEvent(self, event):
+    def mouseReleaseEvent(self, event):                                 # Ghi đè hàm mousReleaseEvent của PyQt 
+        """Sự kiện thả chuột -> Tạo cạnh mới"""
         if self.edge_start_node:
             pos = event.pos()
             # Vét cạn kiểm tra từng node (chừa node hiện tại vừa thả chuột)
@@ -237,8 +230,8 @@ class GraphCanvas(QWidget):
                         self.edges.append({"source": self.edge_start_node["id"], "target": node["id"], "weight": random.randint(10, 50)})
                         self.graphChanged.emit()
                     break
-        self.dragging_node = None
-        self.edge_start_node = None
+        self.dragging_node = None       # Huỷ node đang kéo 
+        self.edge_start_node = None     # Huỷ 
         self.update()
 
 # Luồng màn hình giới thiệu
@@ -253,7 +246,7 @@ class IntroScreen(QWidget):
         # Tiêu đề lớn - Retro Glow/Shadow Effect 
         title = QLabel("LÝ THUYẾT ĐỒ THỊ")
         title.setStyleSheet("""
-            font-family: monospace; 
+            font-family: Arial; 
             font-size: 85px; 
             color: #ffffff; 
             letter-spacing: 5px;
@@ -300,6 +293,7 @@ class IntroScreen(QWidget):
 class AppWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Background trắng 
         self.setAutoFillBackground(True)
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setAutoFillBackground(True)
@@ -369,19 +363,23 @@ class AppWidget(QWidget):
         # Option đồ thị có hướng / vô hướng 
         sidebar_layout.addSpacing(30)                                       # Thêm khoảng trống 30px 
         sidebar_layout.addWidget(QLabel("CÀI ĐẶT", styleSheet=f"color: {THEME['text_muted']}; font-size: 12px; font-weight: bold;"))
+        sidebar_layout.addSpacing(10)
         self.check_dir = QRadioButton("Đồ thị có hướng")                    # Checkbox đồ thị có hướng ? 
         self.check_dir.setStyleSheet(f"color: {THEME['white']};")
-        self.check_dir.setAutoExclusive(False)
+        self.check_dir.setAutoExclusive(False)                              # Giá trị độc lập (ko liên quan các checkbox khác)
         self.check_dir.toggled.connect(self.set_directed)                   # Click để set đồ thị có hướng / vô hướng 
         sidebar_layout.addWidget(self.check_dir)                            # Thêm checkbox vào layout sidebar 
-        self.check_weight = QRadioButton("Đồ thị có trọng số")
-        self.check_weight.setChecked(True)
+        sidebar_layout.addSpacing(10)
+        self.check_weight = QRadioButton("Đồ thị có trọng số")              # Checkbox đồ thị có trọng số ?
+        self.check_weight.setChecked(True)                                  # Giá trị mặc định True (đồ thị có trọng số)
         self.check_weight.setStyleSheet("color: white;")
-        self.check_weight.setAutoExclusive(False)
-        self.check_weight.toggled.connect(self.set_weighted)
+        self.check_weight.setAutoExclusive(False)                           # Giá trị độc lập (ko liên quan các checkbox khác)
+        self.check_weight.toggled.connect(self.set_weighted)                # Click để set đồ thị có trọng số / không trọng số
         sidebar_layout.addWidget(self.check_weight)
+        sidebar_layout.addSpacing(20)
         
         # Option tuỳ chỉnh số node 
+        sidebar_layout.addWidget(QLabel("SỐ LƯỢNG NÚT", styleSheet=f"color: {THEME['text_muted']}; font-size: 12px; font-weight: bold;"))
         self.nodes_number_input = QLineEdit("6")                            # Mặc định ban đầu 6 nodes
         self.nodes_number_input.setStyleSheet(f"background: {THEME['text_main']}; color: {THEME['white']}; padding: 8px; border-radius: 8px;")
         self.nodes_number_input.returnPressed.connect(self.update_nodes)    # Ô nhập liệu 
@@ -413,7 +411,7 @@ class AppWidget(QWidget):
         # Bảng biểu bên phải ứng dụng 
         self.table = QTableWidget(0, 0)                     # Layout bảng biểu
         self.table.setFixedWidth(400)                       # Chiều rộng bảng 400px
-        self.table.setStyleSheet(f"background: {THEME['white']}; border-left: 2px solid #e2e8f0; font-family: monospace;")
+        self.table.setStyleSheet(f"background: {THEME['white']}; border-left: 2px solid #e2e8f0; font-family: Arial;")
         self.table.setHorizontalHeaderLabels(["Bước", "Đỉnh"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         mid.addWidget(self.table)                           # Thêm bảng biểu vào Layout nội dung chính, tỉ lệ co dãn 1 
@@ -425,7 +423,7 @@ class AppWidget(QWidget):
         player_panel.setFixedHeight(150)                    # Chiều cao player panel 150px
         player_panel.setStyleSheet(f"background: {THEME['sidebar']}; margin: 15px; border-radius: 15px;")
         player_layout = QHBoxLayout(player_panel)           # Layout player 
-        player_layout.setContentsMargins(30, 0, 30, 0)    # Tạo khoảng xung quanh (margin) layout player 
+        player_layout.setContentsMargins(30, 0, 30, 0)      # Tạo khoảng xung quanh (margin) layout player 
         player_layout.setSpacing(25)                        
 
         control_layout = QHBoxLayout()                      # Layout control (3 nút tiến, lùi, chạy mổ phỏng)
@@ -540,7 +538,7 @@ class AppWidget(QWidget):
     def step_next(self):
         """Tiến một bước thực thi trong mô phỏng thuật toán"""
         if not self.path: self.solve()
-        if self.path and self.sim_step < len(self.path) - 1:
+        if (self.path) and (self.sim_step < len(self.path) - 1):
             self.step_counter.setText(f"BƯỚC: {self.sim_step + 1}/{len(self.path)}")
             self.is_playing = False
             self.player_button.setText("▶")
@@ -550,7 +548,7 @@ class AppWidget(QWidget):
 
     def step_back(self):
         """Lùi một bước thực thi trong mô phỏng thuật toán"""
-        if self.path and self.sim_step > 0:
+        if (self.path) and (self.sim_step > 0):
             self.step_counter.setText(f"BƯỚC: {self.sim_step - 1}/{len(self.path)}")
             self.is_playing = False
             self.player_button.setText("▶")
@@ -561,6 +559,29 @@ class AppWidget(QWidget):
     def get_interval(self):
         """Thời gian nghỉ để quy định tốc độ nhanh chậm của mô phỏng"""
         return int(2000 / max(1, self.sim_speed))
+
+    def toggle_play(self):
+        """Nút điều khiển chạy / dừng"""
+        if not self.path: self.solve()
+        has_content = len(self.path) > 0
+        if has_content:
+            limit = len(self.path)
+            if (not self.is_playing) and (self.sim_step >= limit - 1):
+                self.sim_step = -1
+            self.is_playing = not self.is_playing
+            self.player_button.setText("⏸" if self.is_playing else "▶")
+            if self.is_playing: self.timer.start(self.get_interval())
+            else: self.timer.stop()
+
+    def play_step(self):
+        """Mô phỏng chạy đến khi kết thúc"""
+        if (self.sim_step < len(self.path) - 1):
+            self.sim_step += 1
+            self.update_ui()
+        else: 
+            self.is_playing = False
+            self.timer.stop()
+            self.player_button.setText("▶")
 
     # CÁC HÀM KHỞI TẠO CẬP NHẬT KẾT QUẢ MÔ PHỎNG 
     def init_graph(self):
@@ -577,8 +598,8 @@ class AppWidget(QWidget):
         self.player_button.setText("▶")     # Đổi nút playback
         self.update_adj()                   # Cập nhật ma trận để gán giá trị cạnh 
         self.canvas.set_data(self.nodes, self.edges, self.path, -1, self.is_directed, self.is_weighted)   # Vẽ đồ thị 
-        self.table.setRowCount(0)           # 
-        self.table.setColumnCount(0)        #
+        self.table.setRowCount(0)           # Xóa toàn bộ số hàng của bảng tiến trình
+        self.table.setColumnCount(0)        # Xóa toàn bộ số cột của bảng tiến trình
         self.clear_log()                    # Reset log 
 
     def update_adj(self):
@@ -612,23 +633,31 @@ class AppWidget(QWidget):
         self.init_graph()
 
     def update_ui(self):
-        """Cập nhật trạng thái của đồ thị"""
-        self.step_counter.setText(f"BƯỚC: {self.sim_step + 1}/{len(self.path)}")
-        self.canvas.set_data(self.nodes, self.edges, self.path, self.sim_step, self.is_directed, self.is_weighted)
-        for row in range(self.table.rowCount()):
+        """Cập nhật trạng thái của đồ thị theo bước mô phỏng"""
+        self.step_counter.setText(f"BƯỚC: {self.sim_step + 1}/{len(self.path)}")    # Cập nhật số bước mô phỏng 
+        self.canvas.set_data(self.nodes, self.edges, self.path, self.sim_step, self.is_directed, self.is_weighted) # Cập nhật dữ liệu đồ thị 
+        for row in range(self.table.rowCount()):                                    # Duyệt từng hàng và từng cột 
             for col in range(2):
-                item = self.table.item(row, col)
+                item = self.table.item(row, col)                                    # Xét từng ô
                 if item:
-                    if row == self.sim_step:
+                    if row == self.sim_step:                                        # Highlight hàng hiện tại 
                         item.setBackground(QColor(THEME["indigo"]))
                         item.setForeground(QColor("white"))
-                    else:
+                    else:                                                           # Màu mặc định của các hàng 
                         item.setBackground(QColor("white"))
                         item.setForeground(QColor(THEME["text_main"]))
-        self.table.scrollToItem(self.table.item(max(0, self.sim_step), 0))
+        self.table.scrollToItem(self.table.item(max(0, self.sim_step), 0))          # Tự động cuộn bảng xuống dưới cùng 
 
     def set_directed(self, directed): self.is_directed = directed; self.reset_simulation_state()
-    def set_weighted(self, weighted): self.is_weighted = weighted; self.reset_simulation_state()
+    
+    def set_weighted(self, weighted): 
+        self.is_weighted = weighted; self.reset_simulation_state()
+        if "TSP" in self.algo_btns:
+            if self.is_weighted: self.algo_btns["TSP"].show() # Nếc có trọng số -> Hiển thị nút TSP
+            else:                                             # Nếu không có trọng số -> Ẩn nút TEuler
+                self.algo_btns["TSP"].hide()                  # Nếu đang chọn TSP mà uncheck thì mặc định về Euler
+                if self.algorithm == "TSP":
+                    self.set_algo("EULER FULL GRAPH")
 
     def setup_path_table(self):
         """Tạo kết quả mô phỏng bằng bảng biểu"""
@@ -658,30 +687,6 @@ class AppWidget(QWidget):
         self.clear_log()
         self.update_ui()
 
-    # Nút điều khiển chạy / dừng
-    def toggle_play(self):
-        if not self.path: self.solve()
-        has_content = len(self.path) > 0
-        if has_content:
-            limit = len(self.path)
-            if not self.is_playing and self.sim_step >= limit - 1:
-                self.sim_step = -1
-                
-            self.is_playing = not self.is_playing
-            self.player_button.setText("⏸" if self.is_playing else "▶")
-            if self.is_playing: self.timer.start(self.get_interval())
-            else: self.timer.stop()
-
-    # Nút chạy đến khi kết thúc mô phỏng 
-    def play_step(self):
-        if self.sim_step < len(self.path) - 1:
-            self.sim_step += 1
-            self.update_ui()
-        else: 
-            self.is_playing = False
-            self.timer.stop()
-            self.player_button.setText("▶")
-
     # HÀM GIẢI THUẬT 
     def solve(self):
         """Hàm chọn thuật toán để giải đồ thị"""
@@ -691,10 +696,10 @@ class AppWidget(QWidget):
                 try:
                     # Tạo ma trận 0 1 với 0: ko có cạnh và 1: có cạnh 
                     matrix_01 = [[1 if self.matrix[i][j] < float('inf') and i != j else 0 for j in range(self.node_count)] for i in range(self.node_count)]
-                    is_euler, msg = euler_check(matrix_01, not self.is_directed)
+                    is_euler, msg = euler_check(matrix_01, self.is_directed)
                     if is_euler: 
-                        any_cycle = fleury(matrix_01, not self.is_directed)
-                        cycle_str = " -> ".join(map(str, any_cycle))
+                        any_cycle = fleury(matrix_01, self.is_directed)
+                        cycle_str = " -> ".join([self.nodes[nid]["label"] for nid in any_cycle])
                         self.add_log(f"Một chu trình Euler bất kỳ: {cycle_str}")
                         self.path = any_cycle
                         self.setup_path_table()
@@ -706,7 +711,7 @@ class AppWidget(QWidget):
                 any_cycle, shortest_path, min_cost  = solve_delivery_problem(self.matrix)
                 if (any_cycle):
                     # Format output cho dễ nhìn: 0 -> 1 -> 2 -> 3 -> 0
-                    cycle_str = " -> ".join(map(str, any_cycle))
+                    cycle_str = " -> ".join([self.nodes[nid]["label"] for nid in any_cycle])
                     self.add_log(f"Một chu trình Hamilton bất kỳ: {cycle_str}")
                     self.path = any_cycle
                     self.setup_path_table()
@@ -717,9 +722,12 @@ class AppWidget(QWidget):
                     try:
                         # Tạo ma trận 0 1 với 0: ko có cạnh và 1: có cạnh 
                         matrix_01 = [[1 if self.matrix[i][j] < float('inf') and i != j else 0 for j in range(self.node_count)] for i in range(self.node_count)]
-                        any_cycle, msg = solve_fleury(matrix_01, self.is_directed)
-                        if any_cycle and len(any_cycle) > 2: 
-                            cycle_str = " -> ".join(map(str, any_cycle))
+                        is_euler, sub_start = sub_euler_check(matrix_01, self.is_directed)
+                        if is_euler and sub_start is None: is_euler = False
+                        if is_euler:
+                            matrix_copy = [row[:] for row in matrix_01]
+                            any_cycle = fleury(matrix_copy, self.is_directed, start=sub_start)
+                            cycle_str = " -> ".join([self.nodes[nid]["label"] for nid in any_cycle])
                             self.add_log(f"Một chu trình Euler (Subgraph) bất kỳ: {cycle_str}")
                             self.path = any_cycle
                             self.setup_path_table()
@@ -728,10 +736,10 @@ class AppWidget(QWidget):
                             self.add_log(f"Không tìm thấy chu trình Euler.", THEME["error"])
                     except Exception as e: self.add_log(str(e), THEME["error"])
             elif self.algorithm == "HAMILTON SUBGRAPH":
-                shortest_path, min_cost, any_cycle = solve_hamilton_brute(self.matrix)
+                any_cycle, shortest_path, min_cost = solve_hamilton_brute(self.matrix)
                 if (any_cycle):
                     # Format output cho dễ nhìn: 0 -> 1 -> 2 -> 3 -> 0
-                    cycle_str = " -> ".join(map(str, any_cycle))
+                    cycle_str = " -> ".join([self.nodes[nid]["label"] for nid in any_cycle])
                     self.add_log(f"Một chu trình Hamilton bất kỳ: {cycle_str}")
                     self.path = any_cycle
                     self.setup_path_table()
