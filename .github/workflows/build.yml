@@ -52,5 +52,5 @@ jobs:
     - name: Upload thành phẩm
       uses: actions/upload-artifact@v4
       with:
-        name: App-Dong-Goi-${{ matrix.os }}
+        name: Hameur-${{ matrix.os }}
         path: dist/
